@@ -147,15 +147,63 @@ class CBBScraper:
 
         df['Slug'] = df['School_Raw'].apply(get_slug)
         df.drop(columns=['School_Raw'], inplace=True)
+
+        # Fetch Ratings to get Conference
+        ratings_url = f"{self.base_url}/{season}-ratings.html"
+        ratings_content = self._make_request(ratings_url)
+        if ratings_content:
+            try:
+                soup_r = BeautifulSoup(ratings_content, 'html.parser')
+                table_r = soup_r.find('table', {'id': 'ratings'})
+                if table_r:
+                    df_r = pd.read_html(StringIO(str(table_r)))[0]
+                    
+                    if isinstance(df_r.columns, pd.MultiIndex):
+                        df_r.columns = df_r.columns.get_level_values(1)
+                    
+                    df_r = df_r[df_r['School'] != 'School']
+                    df_r = df_r.dropna(subset=['School'])
+                    
+                    # Extract Slugs from ratings to join on
+                    r_slug_map = {}
+                    for row in table_r.find_all('tr'):
+                        inv_cell = row.find('td', {'data-stat': 'school_name'})
+                        if inv_cell and inv_cell.find('a'):
+                           name = inv_cell.get_text().strip()
+                           href = inv_cell.find('a')['href']
+                           try:
+                               slug = href.split('/')[3]
+                               r_slug_map[name] = slug
+                           except:
+                               pass
+                    
+                    df_r['School_Raw'] = df_r['School'].str.replace(' NCAA', '', regex=False).str.strip()
+                    df_r['Slug'] = df_r['School_Raw'].apply(lambda x: r_slug_map.get(x) or r_slug_map.get(x + " NCAA"))
+                    
+                    if 'Conf' in df_r.columns:
+                        logger.info(f"Ratings DataFrame has Conf column. Sample: {df_r['Conf'].head()}")
+                        
+                    if 'Conf' in df_r.columns and 'Slug' in df_r.columns:
+                        conf_map = df_r.set_index('Slug')['Conf'].to_dict()
+                        df['Conf'] = df['Slug'].map(conf_map)
+                        logger.info(f"Merged Conf column. Non-null count: {df['Conf'].count()}")
+                    else:
+                         logger.error(f"Ratings DataFrame missing columns. Conf: {'Conf' in df_r.columns}, Slug: {'Slug' in df_r.columns}")
+                else:
+                    logger.error("Ratings table (id='ratings') NOT found in content")
+            except Exception as e:
+                logger.error(f"Error processing ratings for conference info: {e}")
+        else:
+             logger.error("Ratings content is empty or None")
         
         logger.info(f"Team Stats Columns: {df.columns}")
         return df
 
-    def get_game_results(self, season, stats_df=None, limit=30):
+    def get_game_results(self, season, stats_df=None, limit=30, conference=None):
         """
         Scrapes game results by iterating through top teams' schedules.
         stats_df: DataFrame returned by get_team_stats (must contain 'Slug').
-        limit: Number of teams to scrape (sorted by SRS or just order).
+        :param conference: Optional conference to filter by (e.g. "ACC", "Big 10")
         """
         if stats_df is None:
              logger.error("stats_df is None")
@@ -164,15 +212,38 @@ class CBBScraper:
         if 'Slug' not in stats_df.columns:
             logger.error("stats_df with Slugs required for partial scraping.")
             return None
-            
+        
+        # Filter by Conference if provided
+        filtered_df = stats_df.copy()
+        if conference:
+             # Fuzzy match or direct match
+             # 'Conf' column expected from get_team_stats
+             if 'Conf' in filtered_df.columns:
+                 # Normalize to uppercase for comparison
+                 # Check strict match first?
+                 # Sports-Ref uses "ACC", "Big Ten", "SEC", etc.
+                 target_conf = conference.strip().lower()
+                 filtered_df = filtered_df[filtered_df['Conf'].str.lower() == target_conf]
+                 logger.info(f"Filtered to {len(filtered_df)} teams in {conference}")
+                 
+                 # If we are filtering by conference, we probably want ALL teams in that conference, not just top 30
+                 # So we ignore 'limit' implicitly by taking the whole filtered_df?
+                 # Or we can still respect limit if it's very large. 
+                 # Let's set limit to len(filtered_df) if conference is set.
+                 limit = len(filtered_df)
+             else:
+                 logger.warning("Conference column not found in stats_df. Ignoring conference filter.")
+
         # Sort by SRS (Simple Rating System) to get top teams, or just take top of list (usually sorted by school name?)
         # Sports-Reference table is typically alphabetical.
         # Verify SRS exists
-        if 'SRS' in stats_df.columns:
-            top_teams = stats_df.sort_values('SRS', ascending=False).head(limit)
+        if 'SRS' in filtered_df.columns:
+            top_teams = filtered_df.sort_values('SRS', ascending=False).head(limit)
         else:
-            top_teams = stats_df.head(limit)
+            top_teams = filtered_df.head(limit)
             
+        # logger.info(f"Top teams to scrape (limit={limit}):\n{top_teams[['School', 'Conf', 'Slug']].head(20)}")
+        
         all_games = []
         
         logger.info(f"Scraping schedules for top {len(top_teams)} teams...")

@@ -30,7 +30,8 @@ def main():
     parser.add_argument("--team_a", type=str, help="First Team Name (e.g. 'Duke')", required=True)
     parser.add_argument("--team_b", type=str, help="Second Team Name (e.g. 'North Carolina')", required=True)
     parser.add_argument("--home_court", action="store_true", help="Set if Team A is the home team")
-    parser.add_argument("--neutral", action="store_true", help="Set if game is neutral site (overrides home_court)")
+    parser.add_argument('--neutral', action='store_true', help='Game is at a neutral site')
+    parser.add_argument('--conference', type=str, help='Filter training data by conference (e.g., "ACC", "Big 10")')
     
     args = parser.parse_args()
     
@@ -56,7 +57,7 @@ def main():
         else:
             logger.info("Scraping fresh training data...")
             stats_df_train = scraper.get_team_stats(train_season)
-            games_df_train = scraper.get_game_results(train_season, stats_df_train)
+            games_df_train = scraper.get_game_results(train_season, stats_df_train, conference=args.conference)
             
             if stats_df_train is not None and games_df_train is not None:
                 stats_df_train.to_csv(stats_path_train, index=False)
