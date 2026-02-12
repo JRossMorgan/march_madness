@@ -124,14 +124,73 @@ def main():
         
     logger.info(f"Matchup: {stats_a['School_Clean']} vs {stats_b['School_Clean']}")
     
+    # Check for schedule data for Team A and Team B
+    # We might need to scrape them if not in our training cache (which is likely, since training is top 30)
+    # Actually, training data was PREVIOUS season.
+    # For prediction, we need CURRENT season logs to know current form.
+    # existing `get_game_results` scrapes *all* given stats_df teams.
+    # We just need these two.
+    
+    # Check cache for current season (we might have scraped it for other reasons?)
+    # or just fetch it fresh.
+    
+    # Reuse scraper logic? scraper.get_game_results relies on stats_df.
+    # Let's make a filtered stats_df for just these two.
+    
+    target_slugs = []
+    if 'Slug' in stats_a: target_slugs.append(stats_a['Slug'])
+    if 'Slug' in stats_b: target_slugs.append(stats_b['Slug'])
+    
+    # Helper to get specific logs
+    # We can use the scraper's internal logic or just use get_game_results with a tiny stats_df
+    
+    # We need to create a dummy stats_df containing just these two rows to pass to get_game_results
+    # filtered_stats = pd.DataFrame([stats_a, stats_b]) # This might lose columns?
+    # Better: Filter the full stats_df_pred
+    
+    subset_df = stats_df_pred[stats_df_pred['School'].isin([stats_a['School'], stats_b['School']])]
+    
+    logger.info(f"Fetching recent games for {team_a} and {team_b}...")
+    # This returns specific games
+    # We need to process them into logs
+    # Note: get_game_results returns a standard games_df
+    games_recent = scraper.get_game_results(current_season, subset_df)
+    
+    # Create logs using processor's helper (which is private but we can make public or duplicate logic)
+    # Actually we can just pass this games_recent to extract_features if we process it there?
+    # But extract_features expects separate logs.
+    
+    # Let's manually filter games_recent for A and B
+    team_a_log = pd.DataFrame()
+    team_b_log = pd.DataFrame()
+    
+    if games_recent is not None and not games_recent.empty:
+        # Standardize
+        # We need to calculate 'Margin'
+        # games_recent has Visitor_Pts, Home_Pts etc (if scraper is consistent)
+        # Processor's _create_team_game_logs expects standard cols.
+        # But wait, scraper.get_game_results returns [Date, Visitor, Visitor_Pts, Home, Home_Pts]
+        
+        # Use processor to create logs
+        # We need to access the private method? Let's rename it to public or access it.
+        # Changing _create_team_game_logs to create_team_game_logs in processor update above? 
+        # I did not remove the underscore in previous step. I should have. 
+        # I will use it as protected for now or fix it.
+        
+        full_logs = processor._create_team_game_logs(games_recent)
+        # full_logs is indexed by (Team, Date)
+        
+        if not full_logs.empty:
+            full_logs = full_logs.reset_index()
+            # fuzzy match team name again? Names should match stats_a['School_Clean']
+            
+            # Filter
+            team_a_log = full_logs[full_logs['Team'] == stats_a['School_Clean']]
+            team_b_log = full_logs[full_logs['Team'] == stats_b['School_Clean']]
+            
     is_home = args.home_court and not args.neutral
     
-    # Create feature vector
-    # We need to construct it exactly like training data features
-    # But wait, processor.extract_features handles the logic
-    # We DO need to pass it `is_home_a`
-    
-    features_dict = processor.extract_features(stats_a, stats_b, is_home)
+    features_dict = processor.extract_features(stats_a, stats_b, is_home, team_a_log, team_b_log)
     features_df = pd.DataFrame([features_dict])
     
     prob = predictor.predict_proba(features_df)
